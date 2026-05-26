@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from datetime import datetime, timezone
 
-from live.config import COINS, COIN_CAPITAL, MIN_NOTIONAL, DRY_RUN
+from live.config import COINS, COIN_CAPITAL, TOTAL_CAPITAL, MIN_NOTIONAL, DRY_RUN
 from live.data_feed import fetch_ohlcv, fetch_funding_rates, fetch_fear_greed
 from live.signal_engine import check_signal, check_exit
 from live.portfolio import (
@@ -48,6 +48,20 @@ def run_cycle() -> None:
     fg_s      = fetch_fear_greed()
 
     state = load_state()
+
+    # ── 동적 자본 계산 (복리 자동화) ───────────────────────────────────────
+    free_usdt  = get_balance("USDT")
+    earn_usdt  = state.get("earn_subscribed", 0.0)
+    pos_value  = sum(p["notional"] for p in state["positions"].values())
+    actual_total = free_usdt + earn_usdt + pos_value
+    # 실제 잔고가 설정값보다 크면 복리 반영, 작으면 설정값 유지
+    total_capital = actual_total if actual_total >= TOTAL_CAPITAL else TOTAL_CAPITAL
+    coin_capital  = total_capital / len(COINS)
+    log.info(
+        f"[CAPITAL] 총 {total_capital:.2f} USDT "
+        f"(현물 {free_usdt:.2f} + Earn {earn_usdt:.2f} + 포지션 {pos_value:.2f}) "
+        f"→ 코인당 {coin_capital:.2f} USDT"
+    )
 
     # ── 1. Earn 포지션 갱신 (이자 누적 반영) ──────────────────────────────
     if not DRY_RUN:
@@ -106,7 +120,7 @@ def run_cycle() -> None:
             )
 
             if signal:
-                notional = calc_position_size(kelly)
+                notional = calc_position_size(kelly, coin_capital)
                 if notional < MIN_NOTIONAL:
                     log.warning(f"[SKIP] {sym} 최소 주문 미달 ({notional:.2f} < {MIN_NOTIONAL} USDT)")
                     continue

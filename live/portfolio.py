@@ -52,17 +52,18 @@ def save_state(state: dict) -> None:
         json.dump(state, f, indent=2, default=str)
 
 
-def calc_position_size(kelly_frac: float) -> float:
+def calc_position_size(kelly_frac: float, coin_capital: float = COIN_CAPITAL) -> float:
     """
     코인 자본 × Kelly 분수. MIN_NOTIONAL 미달 시 MIN_NOTIONAL 사용.
+    coin_capital: 동적 자본 계산값 (기본값은 config 고정값)
     반환: 투자할 USDT 금액
     """
-    notional = COIN_CAPITAL * kelly_frac
+    notional = coin_capital * kelly_frac
     if notional < MIN_NOTIONAL:
         log.info(f"Kelly 계산값 {notional:.2f} USDT < MIN_NOTIONAL {MIN_NOTIONAL} → {MIN_NOTIONAL} USDT 사용")
         notional = MIN_NOTIONAL
     # 코인 자본 초과 방지
-    notional = min(notional, COIN_CAPITAL)
+    notional = min(notional, coin_capital)
     return notional
 
 
