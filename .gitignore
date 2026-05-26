@@ -1,0 +1,29 @@
+# API 키 (절대 올리지 말 것)
+.env
+live/.env
+
+# 런타임 상태 (서버에서 자동 생성됨)
+live/state.json
+live/logs/
+live/mpe_history/
+
+# 데이터 (서버에서 자동 다운로드/계산됨 — 무거워서 제외)
+data/cache/
+data/raw/
+
+# 결과 차트 (무거운 이미지)
+results/*.png
+results/*.csv
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Claude Code 설정
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
