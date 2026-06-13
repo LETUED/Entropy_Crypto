@@ -44,7 +44,7 @@ async def main():
     print(f"  포지션 크기:  {config.TAKER_POSITION_PCT*100:.0f}% = {config.TOTAL_CAPITAL_USDT * config.TAKER_POSITION_PCT:,.0f} USDT")
     print(f"  최대 동시:    {config.TAKER_MAX_POSITIONS}개")
     print(f"  목표 / 스톱:  +{config.TAKER_TARGET_PCT*100:.1f}% / -{config.TAKER_STOP_PCT*100:.1f}%")
-    print(f"  엔트로피:     타깃={config.ADAPTIVE_WINDOW_SECONDS}초 임계값={config.ENTROPY_THRESHOLD} (윈도우 {config.ADAPTIVE_WINDOW_MIN}~{config.ADAPTIVE_WINDOW_MAX})")
+    print(f"  엔트로피:     타깃={config.ADAPTIVE_WINDOW_SECONDS}초  범위={config.ENTROPY_LOWER}~{config.ENTROPY_THRESHOLD}  (윈도우 {config.ADAPTIVE_WINDOW_MIN}~{config.ADAPTIVE_WINDOW_MAX})")
     print(f"  볼륨 게이트:  {config.VOLUME_GATE_MIN_TPS} t/s 미만 진입 차단")
     print(f"  OBI 범위:     {config.OBI_THRESHOLD} ~ {config.OBI_ACTIVATE_MAX}")
     print()

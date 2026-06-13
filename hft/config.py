@@ -15,18 +15,20 @@ QUOTE_CAPITAL_RATIO = 0.5      # 세그먼트 자본의 50%를 호가 하나에 
 
 # ── 엔트로피 신호 ────────────────────────────────────────────────────────────
 ENTROPY_WINDOW    = 100   # Maker용 고정 윈도우
-ENTROPY_THRESHOLD = 0.85  # Shannon entropy < 이 값 → 신호 (70% 이상 단방향)
+ENTROPY_THRESHOLD = 0.75  # Shannon entropy < 이 값 → 신호
+ENTROPY_LOWER     = 0.45  # Shannon entropy < 이 값 → exhaustion, 진입 차단
 
 # ── Volume-Adaptive Window (Taker 전용) ──────────────────────────────────────
 ADAPTIVE_WINDOW_SECONDS = 30   # 항상 최근 30초 분량의 거래로 entropy 계산
 ADAPTIVE_WINDOW_MIN     = 30   # 거래량 극히 적을 때 최소 윈도우
 ADAPTIVE_WINDOW_MAX     = 300  # 거래량 극히 많을 때 최대 윈도우
-VOLUME_GATE_MIN_TPS     = 1.5  # trades/sec 미만이면 신규 진입 차단
+VOLUME_GATE_MIN_TPS     = 10.0  # trades/sec 미만이면 신규 진입 차단 (비피크 필터)
 
 # ── OBI 신호 ────────────────────────────────────────────────────────────────
 OBI_BOOK_LEVELS  = 10   # 오더북 상위 N 레벨
 OBI_THRESHOLD    = 0.15  # |OBI| > 이 값 → 방향성 있음
 OBI_ACTIVATE_MAX = 0.5   # |OBI| > 이 값 → 활성화 차단 (Adverse Selection 위험)
+OBI_PERSIST_MIN  = 3    # 같은 방향 연속 N회 이상이어야 진입 (OBI 지연 필터)
 
 # ── 수수료 ──────────────────────────────────────────────────────────────────
 MAKER_FEE = 0.0002   # 0.02% (Binance USDT-M 선물 기본)

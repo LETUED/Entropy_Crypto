@@ -45,6 +45,8 @@ class TakerPaperTrader:
         self._last_display      = 0.0
         self._entropy_signaling = False
         self._events: list[str] = []
+        self._obi_streak     = 0
+        self._obi_streak_dir = ""
 
     # ── 메인 루프 ─────────────────────────────────────────────────────────────
 
@@ -100,17 +102,30 @@ class TakerPaperTrader:
         if mid <= 0:
             return
 
-        is_signal = self.entropy.is_signal
+        entropy   = self.entropy.entropy
+        is_signal = config.ENTROPY_LOWER < entropy < config.ENTROPY_THRESHOLD
         direction = self.obi.direction
         obi_abs   = abs(self.obi.obi)
         in_range  = config.OBI_THRESHOLD < obi_abs <= config.OBI_ACTIVATE_MAX
         tps_ok    = self.entropy.tps >= config.VOLUME_GATE_MIN_TPS
 
-        # ── 진입 ──────────────────────────────────────────────────────────────
-        if is_signal and direction != "neutral" and in_range and tps_ok:
+        # OBI 지속성 추적 (엔트로피 상태와 무관하게 항상 카운트)
+        if direction != "neutral" and in_range:
+            if direction == self._obi_streak_dir:
+                self._obi_streak += 1
+            else:
+                self._obi_streak     = 1
+                self._obi_streak_dir = direction
+        else:
+            self._obi_streak     = 0
+            self._obi_streak_dir = ""
+
+        # ── 진입: 엔트로피 신호 + OBI N회 연속 + 볼륨 충분 ──────────────────
+        persist_ok = self._obi_streak >= config.OBI_PERSIST_MIN
+        if is_signal and persist_ok and tps_ok:
             if not self._entropy_signaling:                       # 새 신호 첫 발생
                 self._entropy_signaling = True
-                self._try_open(direction, bid, ask)
+                self._try_open(self._obi_streak_dir, bid, ask)
 
         elif not is_signal:
             self._entropy_signaling = False
@@ -118,22 +133,24 @@ class TakerPaperTrader:
     def _try_open(self, direction: str, bid: float, ask: float) -> None:
         capital = config.TOTAL_CAPITAL_USDT * config.TAKER_POSITION_PCT
 
-        if direction == "long":
-            entry  = ask                                           # 매수 = ask에 체결
-            target = round(entry * (1 + config.TAKER_TARGET_PCT), 6)
-            stop   = round(entry * (1 - config.TAKER_STOP_PCT),   6)
+        if direction == "buy":
+            pos_dir = "long"
+            entry   = ask                                          # 매수 = ask에 체결
+            target  = round(entry * (1 + config.TAKER_TARGET_PCT), 6)
+            stop    = round(entry * (1 - config.TAKER_STOP_PCT),   6)
         else:
-            entry  = bid                                           # 매도 = bid에 체결
-            target = round(entry * (1 - config.TAKER_TARGET_PCT), 6)
-            stop   = round(entry * (1 + config.TAKER_STOP_PCT),   6)
+            pos_dir = "short"
+            entry   = bid                                          # 매도 = bid에 체결
+            target  = round(entry * (1 - config.TAKER_TARGET_PCT), 6)
+            stop    = round(entry * (1 + config.TAKER_STOP_PCT),   6)
 
         size = capital / entry
-        pos  = self.manager.open(direction, entry, size, target, stop)
+        pos  = self.manager.open(pos_dir, entry, size, target, stop)
         if pos:
             rr = config.TAKER_TARGET_PCT / config.TAKER_STOP_PCT
             self._events.append(
                 f"POS{pos.pos_id} [      OPEN] "
-                f"{direction.upper()} @ {entry:.4f} | "
+                f"{pos_dir.upper()} @ {entry:.4f} | "
                 f"target={target:.4f} stop={stop:.4f} | "
                 f"R:R=1:{rr:.0f} | "
                 f"PE={self.entropy.entropy:.3f} OBI={self.obi.obi:+.3f}"

@@ -1,14 +1,18 @@
 """
-신호 품질 기록기 (거래 없음 - 순수 데이터 수집)
+신호 품질 기록기 v2 — 신호 후 30분 추적
 
-VER-01: 코인 무관 가설   → 4심볼 TPS/엔트로피/OBI 분포 비교
-VER-02: MFE 현실성 검증  → 엔트로피 신호 중 실제 가격 이동 측정
-VER-03: OBI 방향 정확도  → OBI 방향 vs 실제 가격 이동 방향
+핵심 질문:
+  "틱 엔트로피 신호 진입 후 5~30분 들고 있으면 수익이 나는가?"
+
+측정 항목:
+  - 신호 중 MFE (기존 VER-02)
+  - 신호 종료 후 t+2m/5m/10m/20m/30m 가격 이동 (신규)
+  - OBI 방향 정확도 (VER-03)
+  - 심볼별 미세구조 비교 (VER-01)
 
 사용법:
-    python verify_signal_quality.py
-    python verify_signal_quality.py --symbols BTCUSDT SOLUSDT XRPUSDT
-    python verify_signal_quality.py --duration 600   # 600초 후 자동 종료
+    python verify_signal_quality.py --duration 3600
+    python verify_signal_quality.py --symbols BTCUSDT ETHUSDT --duration 7200
 """
 
 from __future__ import annotations
@@ -34,91 +38,92 @@ from hft.signals.obi import OrderBookImbalance
 
 # ── 설정 ─────────────────────────────────────────────────────────────────────
 
-DEFAULT_SYMBOLS  = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
-TRACK_SECONDS    = 60                       # 신호 발생 후 추적 시간
-SNAP_INTERVALS   = [1, 5, 10, 20, 30, 60]  # 가격 스냅샷 시점 (초)
-OUTPUT_DIR       = "docs"
-OUTPUT_CSV       = os.path.join(OUTPUT_DIR, "ver_signal_quality.csv")
-PRINT_INTERVAL_S = 5.0                      # 콘솔 출력 주기
+DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+TRACK_SECONDS   = 1800              # 신호 시작 후 최대 추적 시간 (30분)
+SNAP_INTRA      = [1, 5, 10, 30, 60]           # 신호 중 스냅샷
+SNAP_POST       = [120, 300, 600, 1200, 1800]  # 신호 후 2m/5m/10m/20m/30m
+SNAP_ALL        = SNAP_INTRA + SNAP_POST
+OUTPUT_DIR      = "docs"
+OUTPUT_CSV      = os.path.join(OUTPUT_DIR, "ver_signal_quality_v2.csv")
+PRINT_INTERVAL  = 30.0             # 콘솔 출력 주기 (초)
 
-# ── 데이터 클래스 ─────────────────────────────────────────────────────────────
+# ── 신호 레코드 ───────────────────────────────────────────────────────────────
 
 @dataclass
 class SignalRecord:
     symbol:       str
+    sig_id:       int
     start_time:   float
     entry_price:  float
-    obi_dir:      str    # "buy" | "sell" | "neutral"
+    obi_dir:      str    # "buy" | "sell"
     tps:          float
     window:       int
     entropy:      float
-    price_history: list[tuple[float, float]] = field(default_factory=list)  # (t_offset, price)
-    end_time:     Optional[float] = None
-    exit_reason:  str = ""
+    vol_pre60:    float = 0.0   # 신호 직전 60초 가격변동폭 % (완전 ex-ante)
+
+    price_history: list[tuple[float, float]] = field(default_factory=list)
+
+    # 신호 종료 정보 (엔트로피 정상화 시점)
+    signal_end_offset: Optional[float] = None
+    signal_end_price:  Optional[float] = None
+    exit_reason:       str = ""
 
     def feed(self, price: float) -> None:
         offset = time.time() - self.start_time
         self.price_history.append((offset, price))
 
-    def is_expired(self) -> bool:
+    def mark_signal_end(self, price: float, reason: str) -> None:
+        if self.signal_end_offset is None:
+            self.signal_end_offset = time.time() - self.start_time
+            self.signal_end_price  = price
+            self.exit_reason       = reason
+
+    def is_collection_complete(self) -> bool:
         return (time.time() - self.start_time) >= TRACK_SECONDS
 
-    def finalize(self, exit_reason: str) -> None:
-        self.end_time   = time.time()
-        self.exit_reason = exit_reason
+    # ── 분석 헬퍼 ────────────────────────────────────────────────────────────
 
-    # MFE / MAE 계산 (OBI 방향 기준)
     def _signed_move(self, price: float) -> float:
-        """OBI 방향이 'buy'면 상승이 양수, 'sell'이면 하락이 양수"""
+        """OBI 방향 기준 가격 이동 (%)"""
         if self.entry_price == 0:
             return 0.0
         raw = (price - self.entry_price) / self.entry_price * 100
         return raw if self.obi_dir != "sell" else -raw
 
-    def mfe(self) -> float:
-        """Max Favorable Excursion (%)"""
-        if not self.price_history:
-            return 0.0
-        return max(self._signed_move(p) for _, p in self.price_history)
-
-    def mae(self) -> float:
-        """Max Adverse Excursion (%)"""
-        if not self.price_history:
-            return 0.0
-        return min(self._signed_move(p) for _, p in self.price_history)
-
-    def direction_correct(self) -> Optional[bool]:
-        """60s 후 가격이 OBI 방향으로 움직였는가?"""
-        final = [p for t, p in self.price_history if t >= 30]
-        if not final:
-            return None
-        return self._signed_move(final[-1]) > 0
-
     def snap(self, interval_s: int) -> Optional[float]:
-        """특정 시점의 signed move (%)"""
+        """특정 시점 signed move (%)"""
         candidates = [(abs(t - interval_s), p) for t, p in self.price_history]
         if not candidates:
             return None
         _, price = min(candidates, key=lambda x: x[0])
         return round(self._signed_move(price), 4)
 
+    def mfe(self) -> float:
+        if not self.price_history:
+            return 0.0
+        end = self.signal_end_offset or float("inf")
+        intra = [p for t, p in self.price_history if t <= end]
+        if not intra:
+            return 0.0
+        return max(self._signed_move(p) for p in intra)
+
     def to_row(self) -> dict:
         row = {
-            "symbol":      self.symbol,
-            "time":        time.strftime("%H:%M:%S", time.localtime(self.start_time)),
-            "entry_price": round(self.entry_price, 6),
-            "obi_dir":     self.obi_dir,
-            "tps":         round(self.tps, 2),
-            "window":      self.window,
-            "entropy":     round(self.entropy, 4),
-            "exit_reason": self.exit_reason,
-            "duration_s":  round((self.end_time or time.time()) - self.start_time, 1),
-            "mfe_pct":     round(self.mfe(), 4),
-            "mae_pct":     round(self.mae(), 4),
-            "dir_correct": self.direction_correct(),
+            "symbol":           self.symbol,
+            "sig_id":           self.sig_id,
+            "time":             time.strftime("%H:%M:%S", time.localtime(self.start_time)),
+            "entry_price":      round(self.entry_price, 6),
+            "obi_dir":          self.obi_dir,
+            "tps":              round(self.tps, 1),
+            "window":           self.window,
+            "entropy":          round(self.entropy, 4),
+            "vol_pre60":        round(self.vol_pre60, 4),
+            "signal_duration_s":round(self.signal_end_offset, 1) if self.signal_end_offset else None,
+            "exit_reason":      self.exit_reason,
+            "mfe_intra":        round(self.mfe(), 4),
         }
-        for iv in SNAP_INTERVALS:
-            row[f"move_t{iv}s"] = self.snap(iv)
+        for iv in SNAP_ALL:
+            row[f"t{iv}s"] = self.snap(iv)
         return row
 
 
@@ -135,182 +140,241 @@ class SymbolMonitor:
         )
         self.obi = OrderBookImbalance(config.OBI_BOOK_LEVELS, config.OBI_THRESHOLD)
 
-        self._current_signal: Optional[SignalRecord] = None
-        self._completed: list[SignalRecord]          = []
-        self._last_price: float = 0.0
+        self._active: Optional[SignalRecord] = None  # 엔트로피 활성 신호
+        self._tracking: list[SignalRecord]   = []    # 종료됐지만 30분 추적 중
+        self._completed: list[SignalRecord]  = []    # 30분 추적 완료
 
-        # VER-01 분포 통계
-        self.tps_samples: list[float]     = []
+        self._last_price: float = 0.0
+        self._sig_counter: int  = 0
+        self._obi_streak: int   = 0
+        self._obi_streak_dir    = ""
+        self._price_history: list[tuple[float, float]] = []  # (time, price)
+        self.trend_filter: bool  = False
+        self.vol_gate_pct: float = 0.0   # 0 = 비활성
+
+        # VER-01 통계
+        self.tick_count:      int         = 0
+        self.signal_count:    int         = 0
+        self.tps_samples:     list[float] = []
         self.entropy_samples: list[float] = []
-        self.obi_samples: list[float]     = []
-        self.signal_count: int            = 0
-        self.tick_count: int              = 0
-        self.start_time: float            = time.time()
+        self.obi_samples:     list[float] = []
+        self.start_time:      float       = time.time()
+
+    def _trend_direction(self) -> str:
+        """최근 30초 가격 기울기로 추세 방향 반환"""
+        now = time.time()
+        cutoff = now - 30.0
+        recent = [(t, p) for t, p in self._price_history if t >= cutoff]
+        if len(recent) < 5:
+            return "neutral"
+        prices = [p for _, p in recent]
+        return "buy" if prices[-1] > prices[0] else "sell"
+
+    def _vol_range_pct(self) -> float:
+        """최근 60초 가격 변동폭 %"""
+        now = time.time()
+        cutoff = now - 60.0
+        recent = [p for t, p in self._price_history if t >= cutoff]
+        if len(recent) < 5:
+            return 0.0
+        return (max(recent) - min(recent)) / min(recent) * 100
 
     def on_trade(self, data: dict) -> None:
         self._last_price = float(data["p"])
+        self._price_history.append((time.time(), self._last_price))
         self.entropy.update(bool(data["m"]))
         self.tick_count += 1
-
-        tps = self.entropy.tps
-        if tps > 0:
-            self.tps_samples.append(tps)
         self.entropy_samples.append(self.entropy.entropy)
+        if self.entropy.tps > 0:
+            self.tps_samples.append(self.entropy.tps)
 
-        # 추적 중인 신호에 가격 피드
-        if self._current_signal:
-            self._current_signal.feed(self._last_price)
-            if self._current_signal.is_expired():
-                self._close_signal("timeout")
+        # 모든 추적 중 레코드에 가격 피드
+        if self._active:
+            self._active.feed(self._last_price)
+        for rec in self._tracking:
+            rec.feed(self._last_price)
 
     def on_depth(self, data: dict) -> list[SignalRecord]:
-        """오더북 업데이트 → 신호 개폐 판단. 완료된 레코드 반환."""
+        """완료된 레코드 반환"""
         self.obi.update_book(data.get("bids", []), data.get("asks", []))
         mid = self.obi.mid_price
         if mid > 0:
             self._last_price = mid
         self.obi_samples.append(self.obi.obi)
 
-        is_signal = self.entropy.is_signal
+        price     = self._last_price
+        is_signal = config.ENTROPY_LOWER < self.entropy.entropy < config.ENTROPY_THRESHOLD
         tps_ok    = self.entropy.tps >= config.VOLUME_GATE_MIN_TPS
         obi_abs   = abs(self.obi.obi)
         in_range  = config.OBI_THRESHOLD < obi_abs <= config.OBI_ACTIVATE_MAX
+        direction = self.obi.direction
 
-        # 신호 열기
-        if is_signal and tps_ok and in_range and self._current_signal is None:
-            self._current_signal = SignalRecord(
+        # OBI 지속성 추적
+        if direction != "neutral" and in_range:
+            if direction == self._obi_streak_dir:
+                self._obi_streak += 1
+            else:
+                self._obi_streak     = 1
+                self._obi_streak_dir = direction
+        else:
+            self._obi_streak     = 0
+            self._obi_streak_dir = ""
+
+        persist_ok = self._obi_streak >= config.OBI_PERSIST_MIN
+        trend_ok   = (not self.trend_filter) or (self._trend_direction() == self._obi_streak_dir)
+        vol_ok     = (self.vol_gate_pct <= 0) or (self._vol_range_pct() >= self.vol_gate_pct)
+
+        # 새 신호 열기
+        if is_signal and tps_ok and in_range and persist_ok and trend_ok and vol_ok and self._active is None:
+            self._sig_counter += 1
+            self._active = SignalRecord(
                 symbol      = self.symbol,
+                sig_id      = self._sig_counter,
                 start_time  = time.time(),
-                entry_price = self._last_price,
-                obi_dir     = self.obi.direction,
+                entry_price = price,
+                obi_dir     = self._obi_streak_dir,
                 tps         = self.entropy.tps,
                 window      = self.entropy.current_window,
                 entropy     = self.entropy.entropy,
+                vol_pre60   = self._vol_range_pct(),
             )
             self.signal_count += 1
 
-        # 신호 닫기 (엔트로피 정상화)
-        elif not is_signal and self._current_signal:
-            self._close_signal("entropy_normalized")
+        # 신호 종료 (엔트로피 정상화)
+        elif not is_signal and self._active:
+            self._active.mark_signal_end(price, "entropy_normalized")
+            self._tracking.append(self._active)
+            self._active = None
+
+        # 30분 추적 완료된 것 수확
+        done = [r for r in self._tracking if r.is_collection_complete()]
+        for r in done:
+            self._tracking.remove(r)
+            self._completed.append(r)
 
         completed, self._completed = self._completed, []
         return completed
 
-    def _close_signal(self, reason: str) -> None:
-        if self._current_signal:
-            self._current_signal.finalize(reason)
-            self._completed.append(self._current_signal)
-            self._current_signal = None
-
     def ver01_stats(self) -> dict:
-        """VER-01: 분포 통계"""
-        elapsed = time.time() - self.start_time
+        elapsed = max(time.time() - self.start_time, 1)
         return {
-            "symbol":         self.symbol,
-            "elapsed_s":      round(elapsed, 0),
-            "tick_count":     self.tick_count,
-            "avg_tps":        round(np.mean(self.tps_samples), 2) if self.tps_samples else 0,
-            "std_tps":        round(np.std(self.tps_samples), 2) if self.tps_samples else 0,
-            "signal_count":   self.signal_count,
-            "signal_rate":    round(self.signal_count / max(elapsed, 1) * 60, 2),  # per min
-            "avg_entropy":    round(np.mean(self.entropy_samples), 4) if self.entropy_samples else 1.0,
-            "pct_below_thr":  round(np.mean([e < config.ENTROPY_THRESHOLD for e in self.entropy_samples]) * 100, 1) if self.entropy_samples else 0,
-            "avg_obi":        round(np.mean(self.obi_samples), 4) if self.obi_samples else 0,
-            "std_obi":        round(np.std(self.obi_samples), 4) if self.obi_samples else 0,
+            "symbol":        self.symbol,
+            "elapsed_m":     round(elapsed / 60, 1),
+            "avg_tps":       round(np.mean(self.tps_samples), 1) if self.tps_samples else 0,
+            "avg_entropy":   round(np.mean(self.entropy_samples), 4) if self.entropy_samples else 1.0,
+            "signal_count":  self.signal_count,
+            "signal_per_h":  round(self.signal_count / elapsed * 3600, 1),
         }
 
 
 # ── CSV 기록기 ────────────────────────────────────────────────────────────────
 
 class CsvWriter:
-    FIELDNAMES = (
-        ["symbol", "time", "entry_price", "obi_dir", "tps", "window",
-         "entropy", "exit_reason", "duration_s", "mfe_pct", "mae_pct", "dir_correct"]
-        + [f"move_t{iv}s" for iv in SNAP_INTERVALS]
+    FIELDS = (
+        ["symbol", "sig_id", "time", "entry_price", "obi_dir",
+         "tps", "window", "entropy", "vol_pre60",
+         "signal_duration_s", "exit_reason", "mfe_intra"]
+        + [f"t{iv}s" for iv in SNAP_ALL]
     )
 
     def __init__(self, path: str):
-        self.path = path
         os.makedirs(os.path.dirname(path), exist_ok=True)
         self._f   = open(path, "w", newline="", encoding="utf-8")
-        self._csv = csv.DictWriter(self._f, fieldnames=self.FIELDNAMES)
+        self._csv = csv.DictWriter(self._f, fieldnames=self.FIELDS)
         self._csv.writeheader()
         self._f.flush()
 
-    def write(self, record: SignalRecord) -> None:
-        self._csv.writerow(record.to_row())
+    def write(self, rec: SignalRecord) -> None:
+        self._csv.writerow(rec.to_row())
         self._f.flush()
 
     def close(self) -> None:
         self._f.close()
 
 
-# ── 요약 출력 ─────────────────────────────────────────────────────────────────
+# ── 콘솔 출력 ────────────────────────────────────────────────────────────────
 
-def print_ver01(monitors: dict[str, SymbolMonitor]) -> None:
-    print("\n" + "=" * 80)
-    print(f"  VER-01  코인 무관 가설  [{time.strftime('%H:%M:%S')}]")
-    print(f"  {'심볼':<10} {'TPS(avg)':<10} {'TPS(std)':<10} {'엔트로피':<10} {'신호%':<8} {'신호/분':<8} {'OBI(std)'}")
-    print("-" * 80)
-    for s in monitors.values():
-        st = s.ver01_stats()
-        print(
-            f"  {st['symbol']:<10} "
-            f"{st['avg_tps']:>7.2f}   "
-            f"{st['std_tps']:>7.2f}   "
-            f"{st['avg_entropy']:>7.4f}   "
-            f"{st['pct_below_thr']:>5.1f}%  "
-            f"{st['signal_rate']:>6.2f}   "
-            f"{st['std_obi']:>6.4f}"
-        )
-    print("=" * 80)
+def print_status(monitors: dict[str, SymbolMonitor], completed: list[SignalRecord]) -> None:
+    print(f"\n{'='*70}  [{time.strftime('%H:%M:%S')}]")
 
+    # VER-01
+    print(f"  {'심볼':<10} {'TPS':>6} {'엔트로피':>8} {'신호수':>6} {'신호/시':>8}")
+    print(f"  {'-'*45}")
+    for m in monitors.values():
+        s = m.ver01_stats()
+        print(f"  {s['symbol']:<10} {s['avg_tps']:>6.1f} {s['avg_entropy']:>8.4f} "
+              f"{s['signal_count']:>6} {s['signal_per_h']:>8.1f}")
 
-def print_ver02_03(completed: list[SignalRecord]) -> None:
     if not completed:
+        print(f"\n  아직 30분 추적 완료 없음 (활성 신호 추적 중)")
+        print()
         return
-    mfe_vals   = [r.mfe() for r in completed]
-    mae_vals   = [r.mae() for r in completed]
-    dir_flags  = [r.direction_correct() for r in completed if r.direction_correct() is not None]
 
-    print(f"\n  VER-02  MFE 분석  (총 {len(completed)}건)")
-    print(f"    MFE 중위값:  {np.median(mfe_vals):+.4f}%")
-    print(f"    MFE p75:     {np.percentile(mfe_vals, 75):+.4f}%")
-    print(f"    MFE p90:     {np.percentile(mfe_vals, 90):+.4f}%")
-    print(f"    MAE 중위값:  {np.median(mae_vals):+.4f}%")
-    print(f"    0.2% 달성률: {np.mean([m >= 0.2 for m in mfe_vals])*100:.1f}%")
-    print(f"    0.1% 달성률: {np.mean([m >= 0.1 for m in mfe_vals])*100:.1f}%")
-    if dir_flags:
-        print(f"\n  VER-03  OBI 방향 정확도")
-        print(f"    방향 맞음:   {np.mean(dir_flags)*100:.1f}% (n={len(dir_flags)}, 기준=30초 후 가격)")
-        print(f"    vs 랜덤 55%: {'✓ 유의미' if np.mean(dir_flags) > 0.55 else '✗ 랜덤 수준'}")
+    # VER-02: 신호 중 MFE
+    mfes = [r.mfe() for r in completed]
+    print(f"\n  [VER-02] 신호 중 MFE  (n={len(completed)})")
+    print(f"  중위: {np.median(mfes):+.4f}%  p75: {np.percentile(mfes,75):+.4f}%  p90: {np.percentile(mfes,90):+.4f}%")
+    print(f"  0.1% 달성: {np.mean([m>=0.1 for m in mfes])*100:.1f}%  "
+          f"수수료(Taker 0.10%) 기준선")
+
+    # 신호 후 지속성 — 핵심
+    print(f"\n  [핵심] 신호 진입 후 시간별 이동 (OBI 방향 기준)")
+    print(f"  {'시점':<12} {'중위':>8} {'p75':>8} {'p90':>8} {'승률':>8}  {'의미'}")
+    print(f"  {'-'*60}")
+
+    fee_taker = 0.10
+    fee_maker = 0.04
+
+    intervals = [(iv, f"t{iv}s") for iv in SNAP_ALL]
+    for iv, col in intervals:
+        vals = [r.snap(iv) for r in completed if r.snap(iv) is not None]
+        if not vals:
+            continue
+        p50 = np.median(vals)
+        p75 = np.percentile(vals, 75)
+        p90 = np.percentile(vals, 90)
+        wr  = np.mean([v > 0 for v in vals]) * 100
+
+        if iv <= 60:
+            tag = "(신호 중)"
+        elif iv == 120:
+            tag = "← 2분"
+        elif iv == 300:
+            tag = "← 5분  ★"
+        elif iv == 600:
+            tag = "← 10분 ★"
+        elif iv == 1200:
+            tag = "← 20분"
+        else:
+            tag = "← 30분"
+
+        marker = ""
+        if p90 >= fee_taker:
+            marker = " [Taker 가능]"
+        elif p90 >= fee_maker:
+            marker = " [Maker 가능]"
+
+        label = f"{iv}초" if iv < 60 else f"{iv//60}분"
+        print(f"  {label:<12} {p50:>+8.4f}% {p75:>+8.4f}% {p90:>+8.4f}%  {wr:>6.1f}%  {tag}{marker}")
+
+    # 신호 지속 시간
+    durations = [r.signal_end_offset for r in completed if r.signal_end_offset]
+    if durations:
+        print(f"\n  신호 평균 지속: {np.mean(durations):.1f}s  "
+              f"중위: {np.median(durations):.1f}s  "
+              f"최대: {max(durations):.1f}s")
     print()
 
 
 # ── 메인 ─────────────────────────────────────────────────────────────────────
 
-async def run(symbols: list[str], duration: Optional[int]) -> None:
-    syms_lower = [s.lower() for s in symbols]
-    streams    = []
-    for sym in syms_lower:
-        streams.append(f"{sym}@aggTrade")
-        streams.append(f"{sym}@depth20@100ms")
-
-    url = f"{config.WS_BASE}?streams=" + "/".join(streams)
-    monitors = {s.upper(): SymbolMonitor(s) for s in symbols}
-    writer   = CsvWriter(OUTPUT_CSV)
-    all_completed: list[SignalRecord] = []
-    last_print = 0.0
-    start      = time.time()
-
-    print(f"\n연결 중... {len(symbols)}개 심볼 동시 모니터링")
-    print(f"심볼: {', '.join(s.upper() for s in symbols)}")
-    print(f"출력: {OUTPUT_CSV}")
-    print(f"{'─'*60}")
-
+async def _ws_loop(url, monitors, writer, all_completed, start, duration,
+                   last_print_ref) -> bool:
+    """단일 WebSocket 세션. True=정상종료, False=재연결 필요"""
+    import websockets.exceptions
     try:
-        async with websockets.connect(url, ping_interval=20) as ws:
-            print("연결됨. 데이터 수집 시작 (Ctrl+C로 종료)\n")
+        async with websockets.connect(url, ping_interval=20, open_timeout=30) as ws:
+            print(f"연결됨. ({time.strftime('%H:%M:%S')})\n")
             async for raw in ws:
                 msg    = json.loads(raw)
                 stream = msg.get("stream", "")
@@ -329,37 +393,94 @@ async def run(symbols: list[str], duration: Optional[int]) -> None:
                         all_completed.append(rec)
 
                 now = time.time()
-                if now - last_print >= PRINT_INTERVAL_S:
-                    print_ver01(monitors)
-                    print_ver02_03(all_completed)
-                    last_print = now
+                if now - last_print_ref[0] >= PRINT_INTERVAL:
+                    print_status(monitors, all_completed)
+                    last_print_ref[0] = now
 
                 if duration and (now - start) >= duration:
-                    print(f"\n{duration}초 완료. 자동 종료.")
-                    break
+                    print(f"\n{duration}초 완료.")
+                    return True
+        return True
+    except (websockets.exceptions.ConnectionClosedError,
+            ConnectionResetError, OSError) as e:
+        print(f"\n  [재연결] {e}")
+        return False
 
+
+async def run(symbols: list[str], duration: Optional[int],
+              trend_filter: bool = False, vol_gate: float = 0.0) -> None:
+    syms_lower = [s.lower() for s in symbols]
+    streams    = []
+    for sym in syms_lower:
+        streams.append(f"{sym}@aggTrade")
+        streams.append(f"{sym}@depth20@100ms")
+
+    url      = f"{config.WS_BASE}?streams=" + "/".join(streams)
+    monitors = {s.upper(): SymbolMonitor(s) for s in symbols}
+    for mon in monitors.values():
+        mon.trend_filter = trend_filter
+        mon.vol_gate_pct = vol_gate
+    writer   = CsvWriter(OUTPUT_CSV)
+
+    all_completed: list[SignalRecord] = []
+    last_print_ref = [0.0]
+    start      = time.time()
+
+    print(f"\n틱 신호 → 30분 추적 검증기")
+    print(f"심볼: {', '.join(s.upper() for s in symbols)}")
+    print(f"엔트로피 범위: {config.ENTROPY_LOWER} ~ {config.ENTROPY_THRESHOLD}")
+    print(f"볼륨 게이트: TPS ≥ {config.VOLUME_GATE_MIN_TPS}")
+    print(f"OBI 지속성: {config.OBI_PERSIST_MIN}회  추세필터: {'ON' if trend_filter else 'OFF'}  변동성게이트: {vol_gate:.2f}%")
+    print(f"출력: {OUTPUT_CSV}")
+    print(f"{'─'*60}")
+    print(f"신호 발생 → 30분 추적 → CSV 저장 (Ctrl+C로 종료)\n")
+
+    try:
+        while True:
+            done = await _ws_loop(url, monitors, writer, all_completed,
+                                  start, duration, last_print_ref)
+            if done:
+                break
+            if duration and (time.time() - start) >= duration:
+                break
+            await asyncio.sleep(5)
+            print(f"  재연결 시도... ({time.strftime('%H:%M:%S')})")
     except KeyboardInterrupt:
         print("\n\n수동 종료.")
 
     writer.close()
-    print(f"\n{'='*60}")
-    print(f"  최종 결과 ({time.strftime('%H:%M:%S')})")
-    print(f"{'='*60}")
-    print_ver01(monitors)
-    if all_completed:
-        print_ver02_03(all_completed)
-        print(f"  CSV 저장: {OUTPUT_CSV}  ({len(all_completed)}건)")
-    else:
-        print("  신호 없음 (볼륨 부족 또는 시간 부족)")
+    print(f"\n{'='*70}")
+    print(f"  최종 결과  ({time.strftime('%H:%M:%S')})")
+    print_status(monitors, all_completed)
+
+    w2 = CsvWriter(OUTPUT_CSV.replace(".csv", "_partial.csv"))
+    for mon in monitors.values():
+        for rec in mon._tracking + ([] if mon._active is None else [mon._active]):
+            rec.mark_signal_end(mon._last_price, "session_end")
+            w2.write(rec)
+    w2.close()
+
+    total = len(all_completed)
+    print(f"  완료 저장: {OUTPUT_CSV} ({total}건)")
+    print(f"  미완료 저장: {OUTPUT_CSV.replace('.csv','_partial.csv')}")
 
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--symbols",  nargs="+", default=DEFAULT_SYMBOLS, help="심볼 리스트")
-    p.add_argument("--duration", type=int,  default=None,            help="자동 종료 초 (미지정 시 Ctrl+C)")
+    p.add_argument("--symbols",  nargs="+", default=DEFAULT_SYMBOLS)
+    p.add_argument("--duration", type=int,  default=None)
+    p.add_argument("--persist",  type=int,  default=None,  help="OBI 지속성 N회 (기본: config값)")
+    p.add_argument("--output",   type=str,  default=None,  help="CSV 출력 경로")
+    p.add_argument("--trend",    action="store_true",       help="추세 필터 활성화")
+    p.add_argument("--vol-gate", type=float, default=0.0,  help="최근 60초 변동폭 최소 %% (0=비활성)")
     return p.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    asyncio.run(run(args.symbols, args.duration))
+    if args.persist is not None:
+        config.OBI_PERSIST_MIN = args.persist
+    if args.output is not None:
+        OUTPUT_CSV = args.output
+    asyncio.run(run(args.symbols, args.duration, trend_filter=args.trend,
+                    vol_gate=args.vol_gate))
