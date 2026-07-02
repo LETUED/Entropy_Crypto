@@ -59,7 +59,7 @@ src/
   data/        Binance/온체인 수집 (parquet 캐시)
   entropy/     MPE·온체인 엔트로피 계산
   analysis/    백테스트, walk-forward, 멀티코인
-exp01~35*.py   실험 스크립트 (각각 독립 실행)
+exp01~35*.py   실험 스크립트 37개 (exp05 결번, exp26·31은 하위 분할 a/b/c)
 live/          실거래 봇 (매시간 크론, DRY_RUN 기본)
 hft/           HFT 틱 트랙 모듈 + 페이퍼 러너
 results/       실험별 차트 PNG / CSV
