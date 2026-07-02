@@ -27,3 +27,8 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
+
+# 로컬 전용
+CLAUDE.md
+.claudeignore
+docs/CLAUDE_CODE_TIPS.md
