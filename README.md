@@ -61,7 +61,7 @@ src/
   data/        Binance/온체인 수집 (parquet 캐시)
   entropy/     MPE·온체인 엔트로피 계산
   analysis/    백테스트, walk-forward, 멀티코인
-exp01~35*.py   실험 스크립트 37개 (exp05 결번, exp26·31은 하위 분할 a/b/c)
+experiments/   실험 스크립트 37개 exp01~35 (exp05 결번, exp26·31은 하위 분할 a/b/c)
 live/          실거래 봇 (매시간 크론, DRY_RUN 기본)
 hft/           HFT 틱 트랙 모듈 + 페이퍼 러너
 results/       실험별 차트 PNG / CSV
@@ -73,7 +73,7 @@ docs/          연구 일지, HFT 부검, 초기 이론 설계
 ```bash
 pip install -r requirements.txt
 python prefetch_all.py                  # OHLCV/MPE 캐시 생성 (최초 1회)
-python exp01_original_strategy.py       # 임의 실험 재현
+python experiments/exp01_original_strategy.py   # 임의 실험 재현 (저장소 루트에서 실행)
 python run_hft_paper.py                 # HFT 페이퍼 트레이딩
 ```
 
