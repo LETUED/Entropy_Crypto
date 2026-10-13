@@ -416,7 +416,7 @@ def main():
               f"{st['mean_bps']:>+8.1f} {st['t']:>5.2f}{sig} {st['winrate']:>6.1%} "
               f"{st['sharpe_raw']:>7.3f} {st['sharpe_ann']:>7.3f}")
     print("  " + "-" * 76)
-    print("  gross/net = 거래당 평균(bps,gross는수수료 전) | Sh_raw=거래당 | Sh_ann=연율(=raw×√(거래/년))")
+    print("  gross/net = 거래당 평균(bps,gross는 수수료 차감 전) | Sh_raw=거래당 | Sh_ann=연율(=raw×√(거래/년))")
     print("  * = |t|>1.96 (5% 유의)")
 
     print("\n" + "=" * 80)
