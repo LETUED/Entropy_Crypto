@@ -5,7 +5,7 @@ df = pd.read_csv(r'C:\Users\dglst\Desktop\dev\Entropy_Crypto\docs\ver_p5.csv')
 
 # t-columns are ALREADY OBI-direction-adjusted % moves (positive = moved in signal direction).
 # So "direction correct @5min" = t300s > 0.
-# EV模型: 신호방향으로 t300s 만큼 움직였다고 가정(부호조정됨).
+# EV 모델: 신호방향으로 t300s 만큼 움직였다고 가정(부호조정됨).
 # 왕복 수수료: Maker 0.08%, Taker 0.20%. t컬럼 단위는 %.
 TARGET = 't300s'
 FEE_MAKER = 0.08
