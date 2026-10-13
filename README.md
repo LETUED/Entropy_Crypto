@@ -65,7 +65,7 @@ experiments/   실험 스크립트 37개 exp01~35 (exp05 결번, exp26·31은 �
 live/          실거래 봇 (매시간 크론, DRY_RUN 기본)
 hft/           HFT 틱 트랙 모듈 + 페이퍼 러너
 results/       실험별 차트 PNG / CSV
-docs/          연구 일지, HFT 부검, 초기 이론 설계
+docs/          연구 일지, HFT 사후 분석, 초기 이론 설계
 ```
 
 ## 실행
