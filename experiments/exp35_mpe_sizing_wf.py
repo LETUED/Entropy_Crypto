@@ -275,8 +275,8 @@ def main():
     print(f"  Sharpe(M2 TV+MPE)       = {metrics['M2']['sharpe']:+.3f}")
     print(f"  차이 (M2 - M1)          = {diff_sharpe:+.3f}")
     print(f"  블록부트스트랩 95% CI    = [{lo:+.3f}, {hi:+.3f}]")
-    verdict = ("MPE 사이징 부가가치 있음(CI 하한>0) ✅" if lo > 0
-               else "MPE 사이징 부가가치 통계적으로 0과 구분 불가 ⚠")
+    verdict = ("MPE 사이징이 부가가치를 줌(CI 하한>0) ✅" if lo > 0
+               else "MPE 사이징의 부가가치가 통계적으로 0과 구분되지 않음 ⚠")
     print(f"  >> 판정: {verdict}")
     print(f"\n  참고 M3(MPE-only) Sharpe = {metrics['M3']['sharpe']:+.3f} "
           f"(vs M0 동일 {metrics['M0']['sharpe']:+.3f}, M1 {metrics['M1']['sharpe']:+.3f})")
